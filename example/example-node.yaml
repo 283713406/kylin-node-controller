@@ -1,0 +1,9 @@
+apiVersion: crd.k8s.io/v1
+kind: KylinNode
+metadata:
+  name: kylin-node
+spec:
+  name: "node"
+  address: "192.168.84.134"
+  user: "root"
+  password: "Kylin123."

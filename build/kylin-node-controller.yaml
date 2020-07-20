@@ -1,0 +1,31 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kylin-node-controller
+  namespace: kube-system
+spec:
+  selector:
+    matchLabels:
+      app: kylin-node-controller
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: kylin-node-controller
+    spec:
+      hostNetwork: true
+      containers:
+        - name: kylin-node-controller
+          image: kylin-node-controller:v2
+          volumeMounts:
+            - mountPath: "/etc/kubernetes"
+              name: kylin
+            - mountPath: "/home/kylin"
+              name: home
+      volumes:
+        - name: kylin
+          hostPath:
+            path: /etc/kubernetes
+        - name: home
+          hostPath:
+            path: /home/kylin
