@@ -21,6 +21,8 @@ const (
 	ICMPCOUNT = 5
 
 	PINGTIME = 100
+
+	KylinNodeAnnotation = "kubernetes.io/kylin.node.status"
 )
 
 // GetAdminKubeConfigPath returns the location on the disk where admin kubeconfig is located by default

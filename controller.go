@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"crypto/x509"
+	"encoding/json"
 	"fmt"
 	"html/template"
 	"strings"
@@ -54,6 +55,11 @@ const (
 	// is synced successfully
 	MessageResourceSynced = "KylinNode synced successfully"
 )
+
+type kylinNodeStatus struct {
+	Phase    string `json:"phase,omitempty"`
+	Message  string `json:"message,omitempty"`
+}
 
 // Controller is the controller implementation for KylinNode resources
 type Controller struct {
@@ -232,6 +238,10 @@ func (c *Controller) syncHandler(key string) error {
 			glog.Warningf("KylinNode: %s/%s does not exist in local cache, will delete it ...",
 				namespace, name)
 
+			if len(resetNodeInfo) == 0 {
+				glog.Infof("[KylinNodeController] Not Found kylin node in cluster")
+				return nil
+			}
 			// FIX ME: call kubeadm API to delete this kylin node by name.
 			cmd := "kubeadm reset -f"
 			glog.Infof("[KylinNodeController] Try to reset kylin node: %s/%s ...",
@@ -259,17 +269,33 @@ func (c *Controller) syncHandler(key string) error {
 
 	glog.Infof("[KylinNodeController] Try to process KylinNode: %#v ...", kylinNode)
 
+	message := ""
+	if err = c.updateKylinNodeAnnotation(kylinNode, string(crdv1.KylinNodePending), message, namespace); err != nil {
+		return fmt.Errorf("[KylinNodeController] Update kylin node annotation failed: %s", err.Error())
+	}
 	exitNodes, err := c.getNodeInfo()
 	if err != nil {
+		message = fmt.Sprintf("%s.%s", "getNodeInfo", err)
+		if err = c.updateKylinNodeAnnotation(kylinNode, string(crdv1.KylinNodeFailed), message, namespace); err != nil {
+			return fmt.Errorf("[KylinNodeController] Update kylin node annotation failed: %s", err.Error())
+		}
 		return err
 	}
 
 	if err := admission(kylinNode, exitNodes); err != nil {
+		message = fmt.Sprintf("%s.%s", "admission", err)
+		if err = c.updateKylinNodeAnnotation(kylinNode, string(crdv1.KylinNodeFailed), message, namespace); err != nil {
+			return fmt.Errorf("[KylinNodeController] Update kylin node annotation failed: %s", err.Error())
+		}
 		return fmt.Errorf("[KylinNodeController] Admission failed '%s': %s", key, err.Error())
 	}
 
 	cmd, err := getJoinNodeCommand(c.kubeclientset)
 	if err != nil {
+		message = fmt.Sprintf("%s.%s", "getJoinNodeCommand", err)
+		if err = c.updateKylinNodeAnnotation(kylinNode, string(crdv1.KylinNodeFailed), message, namespace); err != nil {
+			return fmt.Errorf("[KylinNodeController] Update kylin node annotation failed: %s", err.Error())
+		}
 		return fmt.Errorf("[KylinNodeController] Get join node command failed '%s': %s", key, err.Error())
 	}
 
@@ -286,14 +312,25 @@ func (c *Controller) syncHandler(key string) error {
 	glog.Infof("[KylinNodeController] Saved kylin node info: %#v ...", *resetNodeInfo[name])
 
 	if err = preInstallNode(kylinNode); err != nil{
+		message = fmt.Sprint(err)
+		if err = c.updateKylinNodeAnnotation(kylinNode, string(crdv1.KylinNodeFailed), message, namespace); err != nil {
+			return fmt.Errorf("[KylinNodeController] Update kylin node annotation failed: %s", err.Error())
+		}
 		return fmt.Errorf("[KylinNodeController] Pre install node failed '%s': %s", key, err.Error())
 	}
 
 	if err = installNode(kylinNode, cmd); err != nil{
+		message = fmt.Sprint(err)
+		if err = c.updateKylinNodeAnnotation(kylinNode, string(crdv1.KylinNodeFailed), message, namespace); err != nil {
+			return fmt.Errorf("[KylinNodeController] Update kylin node annotation failed: %s", err.Error())
+		}
 		return fmt.Errorf("[KylinNodeController] Install node failed '%s': %s", key, err.Error())
 	}
 
 	c.recorder.Event(kylinNode, corev1.EventTypeNormal, SuccessSynced, MessageResourceSynced)
+	if err = c.updateKylinNodeAnnotation(kylinNode, string(crdv1.KylinNodeSuccess), message, namespace); err != nil {
+		return fmt.Errorf("[KylinNodeController] Update kylin node annotation failed: %s", err.Error())
+	}
 
 	return nil
 }
@@ -494,17 +531,22 @@ func installNode(kylinNode *crdv1.KylinNode, cmd string) error {
 	return nil
 }
 
-/*
-func (c *Controller) updateKylinNodeStatus(kylinNode *crdv1.KylinNode, phase crdv1.KylinNodePhase, message, namespace string) error {
+func (c *Controller) updateKylinNodeAnnotation(kylinNode *crdv1.KylinNode, phase, message, namespace string) error {
+	knStatus := kylinNodeStatus{
+		Phase:   phase,
+		Message: message,
+	}
+	knStatusJson, err := json.Marshal(knStatus)
+	if err != nil {
+		return fmt.Errorf("Failed marshal kylin node annotation, error: %v ", err.Error())
+	}
+
 	kylinNode = kylinNode.DeepCopy()
-
-	kylinNode.Status.Phase = phase
-	kylinNode.Status.Message = message
-
-	_, err := c.kylinnodeclientset.CrdV1().KylinNodes(namespace).UpdateStatus(kylinNode)
+	kylinNode.Annotations[constants.KylinNodeAnnotation] = string(knStatusJson)
+	_, err = c.kylinnodeclientset.CrdV1().KylinNodes(namespace).Update(kylinNode)
 	if err != nil {
 		return fmt.Errorf("Failed update kylin node status, error: %v ", err.Error())
 	}
 
 	return nil
-}*/
+}
