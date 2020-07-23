@@ -14,7 +14,7 @@ const (
 
 	SshPort = 22
 
-	KylinInitNodeFile = "/home/kylin/init_node.zip"
+	KylinInitNodeFile = "/home/kylin/init_node.tar"
 
 	KylinHomePath = "/home/kylin/"
 

@@ -50,7 +50,7 @@ func CopyFileBySftp(userName, password, host, src, des string) error {
 	}
 	defer dstFile.Close()
 
-	buf := make([]byte, 1024)
+	buf := make([]byte, 1024000)
 	for {
 		n, _ := srcFile.Read(buf)
 		if n == 0 {

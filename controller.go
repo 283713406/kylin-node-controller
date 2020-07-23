@@ -232,6 +232,10 @@ func (c *Controller) syncHandler(key string) error {
 			glog.Warningf("KylinNode: %s/%s does not exist in local cache, will delete it ...",
 				namespace, name)
 
+			if len(resetNodeInfo) == 0 {
+				glog.Infof("[KylinNodeController] Not Found kylin node in cluster")
+				return nil
+			}
 			// FIX ME: call kubeadm API to delete this kylin node by name.
 			cmd := "kubeadm reset -f"
 			glog.Infof("[KylinNodeController] Try to reset kylin node: %s/%s ...",
@@ -464,11 +468,11 @@ func preInstallNode(kylinNode *crdv1.KylinNode) error {
 	glog.Infof("[KylinNodeController] preinstall node, copy init_node file to remote server %s/%s success!",
 		name, addr)
 
-	unzipcmd := "[ -f \"/home/kylin/init_node.zip\" ] && unzip -o -d /home/kylin/ /home/kylin/init_node.zip"
-	if err := ssh.RunSshCommand(user, pass, addr, unzipcmd); err != nil {
-		return fmt.Errorf("Failed preInstall node, unzip init_node file error: %v ", err.Error())
+	decompressionCmd := "[ -f \"/home/kylin/init_node.tar\" ] && tar -xvf /home/kylin/init_node.tar -C /home/kylin"
+	if err := ssh.RunSshCommand(user, pass, addr, decompressionCmd); err != nil {
+		return fmt.Errorf("Failed preInstall node, decompression init_node file error: %v ", err.Error())
 	}
-	glog.Infof("[KylinNodeController] preinstall node, unzip init_node file to remote server %s/%s success!",
+	glog.Infof("[KylinNodeController] preinstall node, decompression init_node file to remote server %s/%s success!",
 		name, addr)
 
 	glog.Infof("[KylinNodeController] preinstall node, Start init_node to remote server %s/%s ...", name, addr)
@@ -493,18 +497,3 @@ func installNode(kylinNode *crdv1.KylinNode, cmd string) error {
 		kylinNode.Spec.Name, kylinNode.Spec.Address)
 	return nil
 }
-
-/*
-func (c *Controller) updateKylinNodeStatus(kylinNode *crdv1.KylinNode, phase crdv1.KylinNodePhase, message, namespace string) error {
-	kylinNode = kylinNode.DeepCopy()
-
-	kylinNode.Status.Phase = phase
-	kylinNode.Status.Message = message
-
-	_, err := c.kylinnodeclientset.CrdV1().KylinNodes(namespace).UpdateStatus(kylinNode)
-	if err != nil {
-		return fmt.Errorf("Failed update kylin node status, error: %v ", err.Error())
-	}
-
-	return nil
-}*/
