@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"crypto/x509"
+	"encoding/json"
 	"fmt"
 	"html/template"
 	"strings"
@@ -42,9 +43,10 @@ var joinCommandTemplate = template.Must(template.New("join").Parse(`` +
 	`kubeadm join {{.ControlPlaneHostPort}} --token {{.Token}} --discovery-token-ca-cert-hash {{.CAPubKeyPins}}`,
 ))
 
-var resetNodeInfo = make(map[string]*crdv1.KylinNodeSpec)
-
-const controllerAgentName = "kylin-node-controller"
+const (
+	controllerAgentName = "kylin-node-controller"
+	configMapName = "kylin-reset-node"
+)
 
 const (
 	// SuccessSynced is used as part of the Event 'reason' when a KylinNode is synced
@@ -117,6 +119,21 @@ func NewController(
 		},
 		DeleteFunc: controller.enqueueKylinNodeForDelete,
 	})
+
+	_, err := kubeclientset.CoreV1().ConfigMaps("default").Get(configMapName, metav1.GetOptions{})
+	if err != nil{
+		// create new configMap
+		cm := &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: configMapName,
+			},
+		}
+		res, err := kubeclientset.CoreV1().ConfigMaps("default").Create(cm)
+		if err != nil {
+			glog.Errorf("Failed create configMap %s error: %s", configMapName, err)
+		}
+		glog.Infof("Created configMap %s on %s\n", res.ObjectMeta.Name, res.ObjectMeta.CreationTimestamp)
+	}
 
 	return controller
 }
@@ -232,25 +249,43 @@ func (c *Controller) syncHandler(key string) error {
 			glog.Warningf("KylinNode: %s/%s does not exist in local cache, will delete it ...",
 				namespace, name)
 
-			if len(resetNodeInfo) == 0 {
+			cm, err := c.kubeclientset.CoreV1().ConfigMaps(namespace).Get(configMapName, metav1.GetOptions{})
+			if err != nil {
+				return fmt.Errorf("[KylinNodeController] Failed get configmap '%s': %s", configMapName, err.Error())
+			}
+			knDate := crdv1.KylinNodeSpec{}
+			if value, ok := cm.Data[name]; ok {
+				if err := json.Unmarshal([]byte(value), &knDate); err != nil {
+					return fmt.Errorf("Failed to unmarshal oldData for kylinnode: %v ", err)
+				}
+				glog.Infof("[KylinNodeController] Try to reset kylin node: %s/%s ...",
+					knDate.Name, knDate.Address)
+				delete(cm.Data, name)
+			}else {
 				glog.Infof("[KylinNodeController] Not Found kylin node in cluster")
 				return nil
 			}
+
+			// update configMap
+			_, err = c.kubeclientset.CoreV1().ConfigMaps(namespace).Update(cm)
+			if err != nil {
+				fmt.Printf("[KylinNodeController] Failed update configMap %s: %s", configMapName, err)
+			}
+
 			// FIX ME: call kubeadm API to delete this kylin node by name.
 			cmd := "kubeadm reset -f"
-			glog.Infof("[KylinNodeController] Try to reset kylin node: %s/%s ...",
-				resetNodeInfo[name].Name, resetNodeInfo[name].Address)
 
-			user := resetNodeInfo[name].User
-			pass := resetNodeInfo[name].Password
-			addr := resetNodeInfo[name].Address
+            nodeName := knDate.Name
+			user := knDate.User
+			pass := knDate.Password
+			addr := knDate.Address
 			if err = ssh.RunSshCommand(user, pass, addr, cmd); err != nil{
 				return fmt.Errorf("[KylinNodeController] Failed reset kylin node '%s': %s", key, err.Error())
 			}
 
-			glog.Infof("[KylinNodeController] Deleting node, node name: %s ...", resetNodeInfo[name].Name)
-			if err := c.kubeclientset.CoreV1().Nodes().Delete(resetNodeInfo[name].Name, nil); err != nil {
-				return fmt.Errorf("unable to delete node %q: %v", resetNodeInfo[name].Name, err)
+			glog.Infof("[KylinNodeController] Deleting node, node name: %s ...", nodeName)
+			if err := c.kubeclientset.CoreV1().Nodes().Delete(nodeName, nil); err != nil {
+				return fmt.Errorf("unable to delete node %q: %v", nodeName, err)
 			}
 
 			return nil
@@ -280,14 +315,43 @@ func (c *Controller) syncHandler(key string) error {
 	glog.Infof("[KylinNodeController] Join node command: %#v ...", cmd)
 
 	// Save the node information and use when reset the node
-	spec := &crdv1.KylinNodeSpec{
-		Name:    kylinNode.Spec.Name,
-		Address: kylinNode.Spec.Address,
-		User: kylinNode.Spec.User,
-		Password: kylinNode.Spec.Password,
+	cm, err := c.kubeclientset.CoreV1().ConfigMaps(namespace).Get(configMapName, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("[KylinNodeController] Failed get configmap '%s': %s", configMapName, err.Error())
 	}
-	resetNodeInfo[name] = spec
-	glog.Infof("[KylinNodeController] Saved kylin node info: %#v ...", *resetNodeInfo[name])
+
+
+	if _, ok := cm.Data[kylinNode.Name]; ok {
+		glog.Infof("[KylinNodeController] The kylinNode [%s] is already exites in configMap\n", name)
+	}else {
+		spec := &crdv1.KylinNodeSpec{
+			Name:    kylinNode.Spec.Name,
+			Address: kylinNode.Spec.Address,
+			User: kylinNode.Spec.User,
+			Password: kylinNode.Spec.Password,
+		}
+
+		jsonStr, err := json.Marshal(spec)
+		if err != nil {
+			return fmt.Errorf("failed to Marshal oldData for kylinnode: %v", err)
+		}
+
+		if cm.Data == nil {
+			tmpMap := make(map[string]string)
+			tmpMap[kylinNode.Name] = string(jsonStr)
+			cm.Data = tmpMap
+		}else {
+			cm.Data[kylinNode.Name] = string(jsonStr)
+		}
+
+		glog.Infof("[KylinNodeController] Saved kylin node info in configmap %v", configMapName)
+
+		// 创建一个新的 configMap
+		_, err = c.kubeclientset.CoreV1().ConfigMaps(namespace).Update(cm)
+		if err != nil {
+			fmt.Printf("[KylinNodeController] Failed update configMap %v: %s", configMapName, err)
+		}
+	}
 
 	if err = preInstallNode(kylinNode); err != nil{
 		return fmt.Errorf("[KylinNodeController] Pre install node failed '%s': %s", key, err.Error())

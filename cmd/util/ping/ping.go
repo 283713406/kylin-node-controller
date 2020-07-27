@@ -17,7 +17,6 @@ limitations under the License.
 package ping
 
 import (
-	"fmt"
 	"time"
 
 	"github.com/kylin/kylin-node-controller/cmd/constants"
@@ -36,8 +35,6 @@ func AddrAccessible(ip string) bool {
 	pinger.Run()
 
 	stats := pinger.Statistics()
-
-	fmt.Println(stats)
 
 	if stats.PacketsRecv >= 1 {
 		return true
